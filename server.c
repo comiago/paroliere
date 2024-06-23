@@ -19,11 +19,13 @@
 
 pthread_mutex_t pmutex = PTHREAD_MUTEX_INITIALIZER;
 Players *p;
-int server_fd, durata = 3;
+int server_fd, durata = 3, stringsCount = 0;
 volatile sig_atomic_t inGame = 0;
 volatile sig_atomic_t remainingTime = 0;
-char ***matrix = NULL;
-Dictionary *dictionary;
+char ***matrix = NULL, **strings = NULL;
+TrieNode *dictionary;
+Played *playedWords = NULL;
+int playedWordsCount = 0;
 
 int getTime() {
   remainingTime = alarm(0);
@@ -36,23 +38,70 @@ void handle_sigint(int sig) {
   if (server_fd != -1) {
     close(server_fd);
   }
+
+  // ripulisco le strutture dati dinamiche
+  removeAllUsers(p);
+  freeTrie(dictionary);
+  if (matrix != NULL) {
+    for (int i = 0; i < ROWS; i++) {
+      for (int j = 0; j < COLS; j++) {
+        free(matrix[i][j]);
+      }
+      free(matrix[i]);
+    }
+    free(matrix);
+  }
+
+  if (strings != NULL) {
+    for (int i = 0; i < stringsCount; i++) {
+      free(strings[i]);
+    }
+    free(strings);
+  }
+
+  if (playedWords != NULL) {
+    for (int i = 0; i < playedWordsCount; i++) {
+      free(playedWords[i].word);
+    }
+    free(playedWords);
+  }
   exit(0);
 }
 
 void handle_alarm(int sig) {
   pthread_mutex_lock(&pmutex);
   int count = p->count;
+  pthread_t tid;
   pthread_mutex_unlock(&pmutex);
   if (inGame) {
     printf("Game over. Pausing for 1 minute...\n");
-    gameOff(p);
     inGame = 0;
-    alarm(60);
+    pthread_mutex_lock(&pmutex);
+    insertionSort(p);
+    listToStr(p);
+    // gameOff(p);
+    pthread_mutex_unlock(&pmutex);
+    alarm(20);
   } else {
     if (count >= 2) {
       printf("Pause over. Starting a new game for %d minutes...\n", durata);
-      gameOn(p);
+      if(strings == NULL || stringsCount <= 0) {
+        matrix = randomMatrix(ROWS, COLS);
+      } else {
+        matrix = strToMatr(strings[stringsCount - 1], ROWS, COLS);
+        stringsCount--;
+      }
+      if (playedWords != NULL) {
+        for (int i = 0; i < playedWordsCount; i++) {
+          free(playedWords[i].word);
+        }
+        free(playedWords);
+      }
+      printMatrix(matrix, ROWS, COLS);
       inGame = 1;
+      pthread_mutex_lock(&pmutex);
+      gameOn(p);
+      pthread_mutex_unlock(&pmutex);
       alarm(durata * 60);
     } else {
       printf("Not enough players to start a new game. Waiting for more players...\n");
@@ -66,23 +115,37 @@ void *handle_client(void *arg) {
   Message *msg, *res = malloc(sizeof(Message));
   while(1) {
     msg = receiveMessage(client->fd);
+    printMessage(msg, client->nickname);
     if (msg == NULL) {
       break;
     }
     switch (msg->type) {
       case MSG_REGISTRA_UTENTE:
-        if(msg->length > 10){
+        if(msg->length < 1){
+          res->type = MSG_ERR;
+          res->data = "Nickname too short";
+          res->length = strlen(res->data);
+          sendMessage(msg, client->fd);
+        } else if(msg->length > 10) {
           res->type = MSG_ERR;
           res->data = "Nickname too long";
           res->length = strlen(res->data);
-          sendMessage(msg, client->fd);
-        } else if (userExists(msg->data, p)) {
+          sendMessage(res, client->fd);
+        } else if(strcmp(client->nickname, "user") != 0){
+          res->type = MSG_ERR;
+          res->data = "User already registered";
+          res->length = strlen(res->data);
+          sendMessage(res, client->fd);
+        } else if (userExists(p, msg->data)) {
           res->type = MSG_ERR;
           res->data = "Nickname already in use";
           res->length = strlen(res->data);
           sendMessage(res, client->fd);
         } else {
           client->nickname = msg->data;
+          pthread_mutex_lock(&pmutex);
+          p->count++;
+          pthread_mutex_unlock(&pmutex);
           res->type = MSG_OK;
           res->data = "User registered";
           res->length = strlen(res->data);
@@ -125,20 +188,36 @@ void *handle_client(void *arg) {
           res->data = "You can't partecipate to this game";
           res->length = strlen(res->data);
           sendMessage(res, client->fd);
-        }else if (inGame) {
-          if (checkWordInMatrix(msg->data, matrix, ROWS, COLS) && checkWord(msg->data, dictionary)) {
+        } else if (inGame) {
+          if(wordPlayed(playedWords, playedWordsCount, msg->data, client)){
+            res->type = MSG_ERR;
+            res->data = "Word has already been played";
+            res->length = strlen(res->data);
+            sendMessage(res, client->fd);
+          } else if(!checkWordInMatrix(msg->data, matrix, ROWS, COLS)){
+            res->type = MSG_ERR;
+            res->data = "Word is not in matrix";
+            res->length = strlen(res->data);
+            sendMessage(res, client->fd);
+          } else if (!checkWordInDictionary(dictionary, msg->data)) {
+            res->type = MSG_ERR;
+            res->data = "Word not in dictionary";
+            res->length = strlen(res->data);
+            sendMessage(res, client->fd);
+          } else{
             client->score += strlen(msg->data);
             res->type = MSG_PUNTI_PAROLA;
             char *score = malloc(10 * sizeof(char));
-            sprintf(score, "%d", client->score);
+            sprintf(score, "%d", strlen(msg->data));
             res->data = score;
             res->length = strlen(res->data);
             sendMessage(res, client->fd);
-          } else {
-            res->type = MSG_ERR;
-            res->data = "Invalid word";
-            res->length = strlen(res->data);
-            sendMessage(res, client->fd);
+
+            Played *temp = realloc(playedWords, (playedWordsCount + 1) * sizeof(Played));
+            playedWords = temp;
+            playedWords[playedWordsCount].client = client;
+            playedWords[playedWordsCount].word = strdup(msg->data);
+            playedWordsCount++;
           }
         } else {
           res->type = MSG_ERR;
@@ -152,7 +231,7 @@ void *handle_client(void *arg) {
         break;
       case MSG_HELP:
         res->type = MSG_HELP;
-        res->data = "commands: registra_utente nickname - matrice - punteggio - tempo - p parola - aiuto - fine";
+        res->data = "\ncommands:\n - registra_utente nickname\n - matrice\n - punteggio\n - tempo\n - p parola\n - aiuto\n - fine";
         res->length = strlen(res->data);
         sendMessage(res, client->fd);
         break;
@@ -163,8 +242,8 @@ void *handle_client(void *arg) {
 }
 
 int main(int argc, char* argv[]) {
-  int optopt, longindex, port, seed = 42, ch, retvalue, matrixFd, dictionaryFd, stringsCount = 0;
-  char *nome_server, *matrici = NULL, *dizionario = "dictionary_ita.txt", **strings = NULL;
+  int optopt, longindex, port, seed = 42, ch, retvalue;
+  char *nome_server, *matrici = NULL, *dizionario = "dictionary_ita.txt";
   struct stat statbuf;
 
   static struct option long_options[] = {
@@ -212,61 +291,48 @@ int main(int argc, char* argv[]) {
 
   srand(seed);
 
-  if(matrici == NULL) {
-    matrix = randomMatrix(ROWS, COLS);
-  } else { // controllo che il file delle matrici sia regolare e ne genero la matrice
-    SYSC(retvalue, stat(matrici, &statbuf), matrici);
-    if(!S_ISREG(statbuf.st_mode)) {
-      printf("%s is not a regular file.\n", matrici);
-      exit(EXIT_FAILURE);
-    }
-    SYSC(matrixFd, open(matrici, O_RDONLY), "nella open matrix");
-    ssize_t bytes_read;
-    int i = 0;
+  if(matrici != NULL) {
+    FILE *file;
     char buffer[BUFFERSIZE];
+    size_t line_length;
+    char *new_line;
 
-    while ((bytes_read = read(matrixFd, buffer + i, 1)) > 0) {
-      if (buffer[i] == '\n') {
-        buffer[i] = '\0';
-        if (i > 0) {
-          char *line = malloc(i + 1);
-          strncpy(line, buffer, i + 1);
-          char **new_lines = realloc(strings, (stringsCount + 1) * sizeof(char *));
-          strings = new_lines;
-          strings[stringsCount] = line;
-          stringsCount++;
+    file = fopen(matrici, "r");
+    if (file == NULL) {
+        perror("Errore nell'apertura del file");
+        return 1;
+    }
+
+    while (fgets(buffer, BUFFERSIZE, file) != NULL) {
+        line_length = strcspn(buffer, "\n");
+        buffer[line_length] = '\0';
+
+        new_line = (char *)malloc((line_length + 1) * sizeof(char));
+        if (new_line == NULL) {
+            perror("Errore nell'allocazione della memoria");
+            return 1;
         }
-        i = 0;
-      } else {
-        i++;
-      }
+        strcpy(new_line, buffer);
+
+        char **temp = realloc(strings, (stringsCount + 1) * sizeof(char *));
+        if (temp == NULL) {
+            perror("Errore nel riallocare la memoria");
+            return 1;
+        }
+        strings = temp;
+
+        strings[stringsCount] = new_line;
+        stringsCount++;
     }
 
-    if (i > 0) {
-      buffer[i] = '\0';
-      char *line = malloc(i + 1);
-      strncpy(line, buffer, i + 1);
-      char **new_lines = realloc(strings, (stringsCount + 1) * sizeof(char *));
-      strings = new_lines;
-      strings[stringsCount] = line;
-      stringsCount++;
+    fclose(file);
+
+    for (size_t i = 0; i < stringsCount; i++) {
+        printf("%s\n", strings[i]);
     }
-
-
-    close(matrixFd);
-
-    matrix = strToMatr(strings[stringsCount - 1], ROWS, COLS);
   }
 
-  if(dizionario != NULL) { // controllo che il file delle matrici sia regolare e genero il dizionario
-    SYSC(retvalue, stat(dizionario, &statbuf), dizionario);
-    if(!S_ISREG(statbuf.st_mode)) {
-      printf("%s is not a regular file.\n", dizionario);
-      exit(EXIT_FAILURE);
-    }
-    SYSC(dictionaryFd, open(dizionario, O_RDONLY), "nella open dictionary");
-    dictionary = loadDictionary(dictionaryFd);
-  }
+  dictionary = loadDictionary(dizionario);
 
   p = malloc(sizeof(Players));
   p->head = NULL;
@@ -294,8 +360,7 @@ int main(int argc, char* argv[]) {
 
   printf("Server in ascolto su %s:%d...\n", nome_server, port);
 
-  printMatrix(matrix, ROWS, COLS);
-  alarm(60);
+  alarm(20);
 
   while ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) != -1) {
     Client *client = malloc(sizeof(Client));
@@ -304,6 +369,8 @@ int main(int argc, char* argv[]) {
     client->inGame = 0;
     client->score = 0;
     client->globalScore = 0;
+    client->next = NULL;
+    client->prev = NULL;
     pthread_mutex_lock(&pmutex);
     addUser(p, client);
     pthread_mutex_unlock(&pmutex);

@@ -12,6 +12,7 @@
 #define MSG_PUNTI_PAROLA 'P'
 #define MSG_USCITA 'U'
 #define MSG_HELP 'H'
+#define MSG_CLASSIFICA 'C'
 
 #define BUFFERSIZE 1024
 
@@ -25,12 +26,11 @@ typedef struct {
   char *data;
 } Message;
 
-// Definizione della struttura Dictionary
-typedef struct {
-  char **hashTable;
-  int words, dimension, conflicts;
-  double loadingFactor;
-} Dictionary;
+// Definizione della struttura TrieNode che rappresenta un nodo di un albero Trie
+typedef struct TrieNode {
+    struct TrieNode *children[26]; // Array per le lettere dell'alfabeto
+    int isEndOfWord; // Indica se questo nodo rappresenta la fine di una parola
+} TrieNode;
 
 // Definizione della struttura Client contenente tutte le informazioni di un giocatore
 typedef struct Client {
@@ -45,3 +45,8 @@ typedef struct {
   Client *head, *tail;
   int count;
 } Players;
+
+typedef struct {
+  Client *client;
+  char *word;
+} Played;

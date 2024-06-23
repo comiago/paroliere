@@ -1,0 +1,11 @@
+{
+  "files.associations": {
+    "in.h": "c",
+    "types.h": "c",
+    "stdlib.h": "c",
+    "array": "c",
+    "string_view": "c",
+    "initializer_list": "c",
+    "utility": "c"
+  }
+}

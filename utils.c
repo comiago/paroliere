@@ -80,7 +80,7 @@ char ***randomMatrix(int rows, int cols) {
       elNum--;
     }
   }
-  str[i + 1] = '\0';
+  str[i] = '\0';
   return strToMatr(str, rows, cols);
 }
 
@@ -93,95 +93,78 @@ void printMatrix(char ***matrix, int rows, int cols) {
   }
 }
 
-int hash(char *word, int m, int i) {
-  unsigned long long k = 0;
-  size_t len = strlen(word);
-
-  for (size_t i = 0; i < len; ++i) {
-    k = k * 128 + (unsigned char)word[i];
-  }
-  
-  int h1 = k % m;
-  int h2 = (k >> 5) % (m - 1) + 1;
-
-  return (h1 + i * h2) % m;
-}
-
-Dictionary *loadDictionary(int fd) {
-  int initialSize = 337499;
-  Dictionary *dict = malloc(sizeof(Dictionary));
-  dict->dimension = initialSize;
-  dict->words = 0;
-  dict->loadingFactor = dict->words / dict->dimension;
-  dict->hashTable = malloc(initialSize * sizeof(char *));
-  dict->conflicts = 0;
-  for (int i = 0; i < initialSize; i++) {
-    dict->hashTable[i] = NULL;
-  }
-
-  char buffer[BUFFERSIZE];
-  ssize_t bytesRead;
-
-  while ((bytesRead = read(fd, buffer, BUFFERSIZE)) > 0) {
-    if(dict->loadingFactor > 0.7){
-      int newSize = dict->dimension * 2;
-      char **newHashTable = malloc(newSize * sizeof(char *));
-      for (int i = 0; i < newSize; i++) {
-        newHashTable[i] = NULL;
-      }
-      for (int i = 0; i < dict->dimension; i++) {
-        if(dict->hashTable[i]){
-          dict->conflicts++;
-          int conflict = 0;
-          int index = hash(dict->hashTable[i], newSize, conflict);
-          while(newHashTable[index]){
-            conflict++;
-            index = hash(dict->hashTable[i], newSize, conflict);
-          }
-          newHashTable[index] = dict->hashTable[i];
-        }
-      }
-      free(dict->hashTable);
-      dict->hashTable = newHashTable;
-      dict->dimension = newSize;
+TrieNode *createNode() {
+  TrieNode *node = (TrieNode *)malloc(sizeof(TrieNode));
+  if (node) {
+    node->isEndOfWord = 0;
+    for (int i = 0; i < 26; i++) {
+      node->children[i] = NULL;
     }
-    
-    int start = 0;
-    for (int i = 0; i < bytesRead; i++) {
-      if (buffer[i] == '\n') {
-        char *parola = malloc(i - start + 1);
-        strncpy(parola, buffer + start, i - start);
-        parola[i - start] = '\0';
-        int conflict = 0;
-        int index = hash(parola, dict->dimension, conflict);
-        while(dict->hashTable[index]){
-          dict->conflicts++;
-          conflict++;
-          index = hash(parola, dict->dimension, conflict);
-        }
-        dict->hashTable[index] = parola;
-        dict->words++;
-        start = i + 1;
-      }
+  }
+  return node;
+}
+
+void insertWord(TrieNode *root, const char *word) {
+  TrieNode *current = root;
+  for (int i = 0; i < strlen(word); i++) {
+    int index = word[i] - 'a';
+    if (!current->children[index]) {
+      current->children[index] = createNode();
     }
-    dict->loadingFactor = (double) dict->words / dict->dimension;
+    current = current->children[index];
+  }
+  current->isEndOfWord = 1;
+}
+
+TrieNode *loadDictionary(const char *filename) {
+  FILE *file = fopen(filename, "r");
+  if (!file) {
+    fprintf(stderr, "Errore nell'apertura del file %s\n", filename);
+    return NULL;
   }
 
-  return dict;
+  TrieNode *root = createNode();
+  char word[100]; // Assumi che le parole nel dizionario non superino i 100 caratteri
+
+  while (fscanf(file, "%s", word) != EOF) {
+    insertWord(root, word);
+  }
+
+  fclose(file);
+  return root;
 }
 
-void printDictionary(Dictionary *dictionary) {
-  printf("Dimension: %d\n", dictionary->dimension);
-  printf("words: %d\n", dictionary->words);
-  printf("Loading Factor: %f\n", dictionary->loadingFactor);
-  printf("Conflicts: %d\n", dictionary->conflicts);
+void freeTrie(TrieNode *node) {
+  if (node == NULL) {
+    return;
+  }
+
+  for (int i = 0; i < 26; i++) {
+    freeTrie(node->children[i]);
+  }
+  free(node);
 }
 
-int userExists(char *nickname, Players *players) {
+int checkWordInDictionary(TrieNode *root, const char *word) {
+  TrieNode *current = root;
+  for (int i = 0; i < strlen(word); i++) {
+    int index = word[i] - 'a';
+    if (!current->children[index]) {
+      return 0;
+    }
+    current = current->children[index];
+  }
+  return current && current->isEndOfWord;
+}
+
+int userExists(Players *players, const char *nickname) {
+  if (players->head == NULL) {
+    return 0;
+  }
   Client *current = players->head;
-  while (current) {
+  while (current != NULL) {
     if (strcmp(current->nickname, nickname) == 0) {
-      return 1;
+        return 1;
     }
     current = current->next;
   }
@@ -198,7 +181,6 @@ void addUser(Players *players, Client *client) {
     players->tail->next = client;
     players->tail = client;
   }
-  players->count++;
 }
 
 void removeUser(Players *players, char *nickname) {
@@ -206,7 +188,10 @@ void removeUser(Players *players, char *nickname) {
   Client *cur = players->head;
   while(cur) {
     if(cur->nickname == nickname) {
-      if(cur == players->head) {
+      if(players->count == 1) {
+        players->head = NULL;
+        players->tail = NULL;
+      } else if(cur == players->head) {
         players->head = cur->next;
         players->head->prev = NULL;
       } else if(cur == players->tail) {
@@ -239,82 +224,69 @@ void removeAllUsers(Players *players) {
 void printUsers(Players *players) {
   Client *c = players->head;
   while(c) {
-    printf("%s\n", c->nickname);
+    printf("nickname: %s - global score: %d - score: %d - inGame: %d\n", c->nickname, c->globalScore, c->score, c->inGame);
     c = c->next;
   }
 }
 
-int checkWord(char *word, Dictionary *dictionary) {
-  int conflict = 0;
-  int index = hash(word, dictionary->dimension, conflict);
-  while(dictionary->hashTable[index]){
-    if(strcmp(dictionary->hashTable[index], word) == 0){
-      return 1;
-    }
-    conflict++;
-    index = hash(word, dictionary->dimension, conflict);
-  }
-  return 0;
-}
-
 int dfs(char ***matrix, int rows, int cols, int x, int y, const char *word, int index, int **visited) {
-    int wordLen = strlen(word);
-    int cellLen = strlen(matrix[x][y]);
-    int remainingWordLen = wordLen - index;
+  int wordLen = strlen(word);
+  int cellLen = strlen(matrix[x][y]);
+  int remainingWordLen = wordLen - index;
 
-    if (remainingWordLen < cellLen || strncmp(matrix[x][y], word + index, cellLen) != 0) {
-        return 0;
-    }
+  if (remainingWordLen < cellLen || strncmp(matrix[x][y], word + index, cellLen) != 0) {
+    return 0;
+  }
 
-    if (remainingWordLen == cellLen) {
-        return 1;
-    }
+  if (remainingWordLen == cellLen) {
+    return 1;
+  }
 
-    visited[x][y] = 1;
+  visited[x][y] = 1;
 
-    int found = 0;
-    if (x + 1 < rows && !visited[x + 1][y]) {
-        found = dfs(matrix, rows, cols, x + 1, y, word, index + cellLen, visited);
-    }
-    if (!found && x - 1 >= 0 && !visited[x - 1][y]) {
-        found = dfs(matrix, rows, cols, x - 1, y, word, index + cellLen, visited);
-    }
-    if (!found && y + 1 < cols && !visited[x][y + 1]) {
-        found = dfs(matrix, rows, cols, x, y + 1, word, index + cellLen, visited);
-    }
-    if (!found && y - 1 >= 0 && !visited[x][y - 1]) {
-        found = dfs(matrix, rows, cols, x, y - 1, word, index + cellLen, visited);
-    }
+  int found = 0;
+  if (x + 1 < rows && !visited[x + 1][y]) {
+    found = dfs(matrix, rows, cols, x + 1, y, word, index + cellLen, visited);
+  }
+  if (!found && x - 1 >= 0 && !visited[x - 1][y]) {
+    found = dfs(matrix, rows, cols, x - 1, y, word, index + cellLen, visited);
+  }
+  if (!found && y + 1 < cols && !visited[x][y + 1]) {
+    found = dfs(matrix, rows, cols, x, y + 1, word, index + cellLen, visited);
+  }
+  if (!found && y - 1 >= 0 && !visited[x][y - 1]) {
+    found = dfs(matrix, rows, cols, x, y - 1, word, index + cellLen, visited);
+  }
 
-    visited[x][y] = 0;
+  visited[x][y] = 0;
 
-    return found;
+  return found;
 }
 
 int checkWordInMatrix(char *word, char ***matrix, int rows, int cols) {
-    int **visited = (int **)malloc(rows * sizeof(int *));
-    for (int i = 0; i < rows; i++) {
-        visited[i] = (int *)malloc(cols * sizeof(int));
-        memset(visited[i], 0, cols * sizeof(int));
-    }
+  int **visited = (int **)malloc(rows * sizeof(int *));
+  for (int i = 0; i < rows; i++) {
+    visited[i] = (int *)malloc(cols * sizeof(int));
+    memset(visited[i], 0, cols * sizeof(int));
+  }
 
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            if (strncmp(matrix[i][j], word, strlen(matrix[i][j])) == 0 && dfs(matrix, rows, cols, i, j, word, 0, visited)) {
-                for (int k = 0; k < rows; k++) {
-                    free(visited[k]);
-                }
-                free(visited);
-                return 1;
-            }
+  for (int i = 0; i < rows; i++) {
+    for (int j = 0; j < cols; j++) {
+      if (strncmp(matrix[i][j], word, strlen(matrix[i][j])) == 0 && dfs(matrix, rows, cols, i, j, word, 0, visited)) {
+        for (int k = 0; k < rows; k++) {
+          free(visited[k]);
         }
+        free(visited);
+        return 1;
+      }
     }
+  }
 
-    for (int k = 0; k < rows; k++) {
-        free(visited[k]);
-    }
-    free(visited);
-    return 0;
+  for (int k = 0; k < rows; k++) {
+    free(visited[k]);
+  }
+  free(visited);
+  return 0;
 }
 
 void printShell() {
@@ -338,27 +310,108 @@ Message *receiveMessage(int fd) {
   SYSC(retvalue, read(fd, (void *)&message->length, sizeof(unsigned int)), "Read error");
   message->data = (char *)malloc(sizeof(char) * message->length);
   SYSC(retvalue, read(fd, (void *)message->data, sizeof(char) * message->length), "Read error");
+  message->data[message->length] = '\0';
   return message;
 }
 
-void printMessage(Message *message) {
-  printf("%c %d %s\n", message->type, message->length, message->data);
+void printMessage(Message *message, char *sender) {
+  char *action;
+  switch(message->type) {
+    case MSG_REGISTRA_UTENTE:
+      action = "registration";
+      break;
+    case MSG_MATRICE:
+      action = "matrix";
+      break;
+    case MSG_PAROLA:
+      action = "Word";
+      break;
+    case MSG_USCITA:
+      action = "exit";
+      break;
+    case MSG_HELP:
+      action = "help";
+      break;
+    case MSG_ERR:
+      action = "error";
+      break;
+    case MSG_OK:
+      action = "ok";
+      break;
+    case MSG_TEMPO_ATTESA:
+      action = "waiting time";
+      break;
+    case MSG_TEMPO_PARTITA:
+      action = "game time";
+      break;
+    case MSG_PUNTI_PAROLA:
+      action = "word points";
+      break;
+    case MSG_PUNTI_FINALI:
+      action = "total points";
+      break;
+  }
+  printf("[%s - %s]: %s\n", sender, action, message->data);
 }
 
 void gameOn(Players *players) {
-  Client *current = players->head;
-  while(current) {
-    if(strcmp(current->nickname, "user") == 0) {
-      current->inGame = 1;
+  Client *c = players->head;
+  while(c) {
+    if(strcmp(c->nickname, "user") != 0) {
+      c->inGame = 1;
+      c->score = 0;
     }
-    current = current->next;
+    c = c->next;
   }
 }
 
-void gameOff(Players *players) {
-  Client *current = players->head;
-  while(current) {
-    current->inGame = 0;
+void insertionSort(Players *p) {
+  if (p->head == NULL || p->head->next == NULL) {
+    return;
+  }
+  Client *sorted = NULL;
+  Client *current = p->head;
+  while (current != NULL) {
+    Client *next = current->next;
+    if (sorted == NULL || sorted->score <= current->score) {
+      current->next = sorted;
+      sorted = current;
+    } else {
+      Client *temp = sorted;
+      while (temp->next != NULL && temp->next->score > current->score) {
+        temp = temp->next;
+      }
+      current->next = temp->next;
+      temp->next = current;
+    }
+    current = next;
+  }
+  p->head = sorted;
+}
+
+int wordPlayed(Played *array, int elements, char *word, Client *client) {
+  for (int i = 0; i < elements; i++) {
+    if (array[i].client == client && strcmp(array[i].word, word) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+char* listToStr(Players *players) {
+  int length = 0;
+  Client* current = players->head;
+  while(current != NULL) {
+    length += snprintf(NULL, 0, "%s,%d\n", current->nickname, current->score);
     current = current->next;
   }
+  char *buf = malloc((length + 1) * sizeof(char));
+  current = players->head;
+  int offset = 0;
+  while(current != NULL) {
+    offset += sprintf(buf + offset, "%s,%d\n", current->nickname, current->score);
+    current = current->next;
+  }
+  buf[offset - 1] = '\0';
+  return buf;
 }

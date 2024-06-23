@@ -8,13 +8,13 @@ char ***randomMatrix(int rows, int cols);
 
 void printMatrix(char ***matrix, int rows, int cols);
 
-int hash(char *word, int m, int i);
+TrieNode *loadDictionary(const char *filename);
 
-Dictionary *loadDictionary(int fd);
+void freeTrie(TrieNode *node);
 
-void printDictionary(Dictionary *dictionary);
+int checkWordInDictionary(TrieNode *root, const char *word);
 
-int userExists(char *nickname, Players *players);
+int userExists(Players *players, const char *nickname);
 
 void addUser(Players *players, Client *client);
 
@@ -23,8 +23,6 @@ void removeUser(Players *players, char *nickname);
 void removeAllUsers(Players *players);
 
 void printUsers(Players *players);
-
-int checkWord(char *word, Dictionary *dictionary);
 
 int checkWordInMatrix(char *word, char ***matrix, int rows, int cols);
 
@@ -36,8 +34,10 @@ void *sendMessage(Message *message, int fd);
 
 Message *receiveMessage(int fd);
 
-void printMessage(Message *message);
+void printMessage(Message *message, char *sender);
 
-void gameOn(Players *players);
+void insertionSort(Players *p);
 
-void gameOff(Players *players);
+int wordPlayed(char **array, int elements, char *word, Client *client);
+
+char *listToStr(Players *players);
